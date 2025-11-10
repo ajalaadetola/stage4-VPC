@@ -13,8 +13,9 @@ fi
 # Make scripts executable
 chmod +x vpcctl cleanup.sh
 
-# Create examples directory
-mkdir -p examples
+# Create directories
+echo "Creating directories..."
+mkdir -p examples logs
 
 # Create firewall rules example
 cat > examples/firewall-rules.json << 'EOF'
@@ -51,7 +52,13 @@ EOF
 
 chmod +x examples/web-server.py
 
+# Create empty log file
+touch logs/vpc-demo.log
+
 echo "✅ Demo environment setup complete!"
+echo ""
+echo "Directory structure created:"
+find . -type f -name "*.json" -o -name "*.py" -o -name "*.log" | sort
 echo ""
 echo "To run the demo:"
 echo "  sudo ./vpcctl demo"
