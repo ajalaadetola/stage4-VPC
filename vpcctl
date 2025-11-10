@@ -213,7 +213,7 @@ create_vpc() {
     VPC_NAME="$vpc_name"
     
     # Create bridge
-    local bridge_name="br-$vpc_name"
+    local bridge_name="br_$vpc_name"
     create_bridge "$bridge_name"
     
     # Assign IP to bridge (first IP in CIDR as gateway)
@@ -277,7 +277,7 @@ create_subnet() {
     validate_cidr "$subnet_cidr" || return 1
     
     # Create network namespace for subnet
-    local ns_name="ns-$vpc_name-$subnet_name"
+    local ns_name="ns-${vpc_name}_${subnet_name}"
     
     # Clean up existing namespace if it exists
     if namespace_exists "$ns_name"; then
@@ -288,8 +288,8 @@ create_subnet() {
     create_namespace "$ns_name"
     
     # Create veth pair with unique names including VPC name
-    local veth_host="veth-${vpc_name}-${subnet_name}-host"
-    local veth_ns="veth-${vpc_name}-${subnet_name}-ns"
+    local veth_host="veth_${vpc_name}_${subnet_name}_host"
+    local veth_ns="veth_${vpc_name}_${subnet_name}_ns"
     
     # Clean up any existing veth interfaces
     cleanup_existing_veth "$veth_host"
@@ -554,8 +554,8 @@ setup_peering() {
     fi
     
     # Create veth pair for peering
-    local peer1="peer-${vpc1_name}-${vpc2_name}"
-    local peer2="peer-${vpc2_name}-${vpc1_name}"
+    local peer1="peer_${vpc1_name}_${vpc2_name}"
+    local peer2="peer_${vpc2_name}_${vpc1_name}"
     
     # Clean up existing interfaces
     cleanup_existing_veth "$peer1"
