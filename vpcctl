@@ -1,19 +1,15 @@
-# Create a backup of the current vpcctl
-cp vpcctl vpcctl.backup
-
-# Create a fixed vpcctl with better error handling
+# Create a new fixed vpcctl
 cat > vpcctl << 'EOF'
 #!/bin/bash
 
 # vpcctl - Linux VPC Manager
-# Fixed version with better veth handling
+# Complete working version
 
 set -e
 
 # Configuration
 VPC_DIR="/tmp/vpc_configs"
 LOG_FILE="logs/vpc-demo.log"
-LOG_PREFIX="vpcctl"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -23,60 +19,37 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Logging functions
-log_to_file() {
-    mkdir -p "$(dirname "$LOG_FILE")"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" >> "$LOG_FILE"
-}
-
 log_info() {
-    local message="$*"
-    echo -e "${GREEN}[INFO]${NC} $([ -n "$VPC_NAME" ] && echo "[$VPC_NAME] ")$message"
-    log_to_file "[INFO] $([ -n "$VPC_NAME" ] && echo "[$VPC_NAME] ")$message"
+    echo -e "${GREEN}[INFO]${NC} $*"
 }
 
 log_warn() {
-    local message="$*"
-    echo -e "${YELLOW}[WARN]${NC} $([ -n "$VPC_NAME" ] && echo "[$VPC_NAME] ")$message"
-    log_to_file "[WARN] $([ -n "$VPC_NAME" ] && echo "[$VPC_NAME] ")$message"
+    echo -e "${YELLOW}[WARN]${NC} $*"
 }
 
 log_error() {
-    local message="$*"
-    echo -e "${RED}[ERROR]${NC} $([ -n "$VPC_NAME" ] && echo "[$VPC_NAME] ")$message"
-    log_to_file "[ERROR] $([ -n "$VPC_NAME" ] && echo "[$VPC_NAME] ")$message"
+    echo -e "${RED}[ERROR]${NC} $*"
 }
 
 log_debug() {
-    local message="$*"
-    echo -e "${BLUE}[DEBUG]${NC} $([ -n "$VPC_NAME" ] && echo "[$VPC_NAME] ")$message"
-    log_to_file "[DEBUG] $([ -n "$VPC_NAME" ] && echo "[$VPC_NAME] ")$message"
+    echo -e "${BLUE}[DEBUG]${NC} $*"
 }
 
-# Initialize log file
+# Initialize log
 init_log() {
     mkdir -p "$(dirname "$LOG_FILE")"
     echo "=== VPC DEMO LOG - Started at $(date) ===" > "$LOG_FILE"
 }
 
-# Command execution with better error handling
+# Command execution
 run_cmd() {
     local cmd="$1"
-    local check="${2:-true}"
-    
     log_debug "Executing: $cmd"
-    
-    # Use a different approach for command execution
-    if bash -c "$cmd" 2>&1; then
-        return 0
-    else
-        local result=$?
-        if [ "$check" = "true" ]; then
-            log_error "Command failed: $cmd (exit code: $result)"
-            return $result
-        else
-            return $result
-        fi
+    if ! eval "$cmd" 2>/dev/null; then
+        log_error "Command failed: $cmd"
+        return 1
     fi
+    return 0
 }
 
 # Network namespace operations
@@ -88,7 +61,7 @@ create_namespace() {
     local ns="$1"
     if ! namespace_exists "$ns"; then
         log_info "Creating network namespace: $ns"
-        run_cmd "ip netns add '$ns'"
+        run_cmd "ip netns add $ns"
     else
         log_warn "Namespace $ns already exists"
     fi
@@ -98,7 +71,7 @@ delete_namespace() {
     local ns="$1"
     if namespace_exists "$ns"; then
         log_info "Deleting network namespace: $ns"
-        run_cmd "ip netns delete '$ns'" "false"
+        ip netns delete "$ns" 2>/dev/null || true
     fi
 }
 
@@ -111,10 +84,19 @@ create_bridge() {
     local bridge="$1"
     if ! bridge_exists "$bridge"; then
         log_info "Creating bridge: $bridge"
-        run_cmd "ip link add '$bridge' type bridge"
-        run_cmd "ip link set '$bridge' up"
+        run_cmd "ip link add $bridge type bridge"
+        run_cmd "ip link set $bridge up"
     else
         log_warn "Bridge $bridge already exists"
+    fi
+}
+
+delete_bridge() {
+    local bridge="$1"
+    if bridge_exists "$bridge"; then
+        log_info "Deleting bridge: $bridge"
+        ip link set "$bridge" down 2>/dev/null || true
+        ip link delete "$bridge" 2>/dev/null || true
     fi
 }
 
@@ -127,22 +109,63 @@ vpc_exists() {
     [ -f "$(get_vpc_config_path "$1")" ]
 }
 
-# Core VPC operations - SIMPLIFIED VERSION
+save_vpc_config() {
+    local vpc_name="$1"
+    local key="$2"
+    local value="$3"
+    
+    local config_file="$(get_vpc_config_path "$vpc_name")"
+    mkdir -p "$VPC_DIR"
+    
+    if [ ! -f "$config_file" ]; then
+        touch "$config_file"
+    fi
+    
+    # Remove existing key if present
+    grep -v "^$key=" "$config_file" > "$config_file.tmp" 2>/dev/null || true
+    mv "$config_file.tmp" "$config_file" 2>/dev/null || true
+    
+    # Add new key-value pair
+    echo "$key=$value" >> "$config_file"
+}
+
+get_vpc_config() {
+    local vpc_name="$1"
+    local key="$2"
+    local config_file="$(get_vpc_config_path "$vpc_name")"
+    
+    if [ -f "$config_file" ]; then
+        grep "^$key=" "$config_file" | cut -d'=' -f2-
+    fi
+}
+
+# Core VPC operations
 create_vpc() {
     local vpc_name="$1"
     local cidr_block="$2"
     
     log_info "🚀 Creating VPC: $vpc_name with CIDR: $cidr_block"
     
+    # Check if VPC already exists
+    if vpc_exists "$vpc_name"; then
+        log_error "VPC $vpc_name already exists"
+        return 1
+    fi
+    
     # Create bridge
     local bridge_name="br-$vpc_name"
     create_bridge "$bridge_name"
     
+    # Assign IP to bridge (first IP in CIDR as gateway)
+    local gateway_ip="${cidr_block%.*}.1"
+    log_info "Assigning gateway IP: $gateway_ip to bridge $bridge_name"
+    ip addr add "$gateway_ip/24" dev "$bridge_name" 2>/dev/null || true
+    
     # Store VPC configuration
-    mkdir -p "$VPC_DIR"
-    echo "CIDR=$cidr_block" > "$VPC_DIR/$vpc_name.conf"
-    echo "BRIDGE=$bridge_name" >> "$VPC_DIR/$vpc_name.conf"
-    echo "GATEWAY=${cidr_block%.*}.1" >> "$VPC_DIR/$vpc_name.conf"
+    save_vpc_config "$vpc_name" "CIDR" "$cidr_block"
+    save_vpc_config "$vpc_name" "BRIDGE" "$bridge_name"
+    save_vpc_config "$vpc_name" "GATEWAY" "$gateway_ip"
+    save_vpc_config "$vpc_name" "SUBNETS" ""
     
     log_info "✅ VPC $vpc_name created successfully"
 }
@@ -161,32 +184,36 @@ create_subnet() {
     fi
     
     # Load VPC config
-    source "$VPC_DIR/$vpc_name.conf"
+    local bridge_name=$(get_vpc_config "$vpc_name" "BRIDGE")
+    local gateway_ip=$(get_vpc_config "$vpc_name" "GATEWAY")
     
-    # Create network namespace
+    # Create network namespace for subnet
     local ns_name="ns-$vpc_name-$subnet_name"
-    delete_namespace "$ns_name"  # Clean up first
+    
+    # Clean up existing namespace if it exists
+    delete_namespace "$ns_name"
     create_namespace "$ns_name"
     
-    # Create veth pair with simpler names
-    local veth_host="veth-$vpc_name-$subnet_name-h"
-    local veth_ns="veth-$vpc_name-$subnet_name-n"
+    # Create veth pair with unique names
+    local veth_host="veth-$vpc_name-$subnet_name-host"
+    local veth_ns="veth-$vpc_name-$subnet_name-ns"
     
-    # Clean up any existing interfaces
+    # Clean up any existing veth interfaces
     ip link delete "$veth_host" 2>/dev/null || true
     
     log_info "Creating veth pair: $veth_host <-> $veth_ns"
     
-    # Create veth pair with direct command
-    if ! ip link add "$veth_host" type veth peer name "$veth_ns" 2>/dev/null; then
-        log_error "❌ VETH CREATION FAILED - This is usually due to:"
-        log_error "1. System security policies (SELinux/AppArmor)"
-        log_error "2. NetworkManager conflicts"
-        log_error "3. Missing veth kernel module"
-        log_error ""
-        log_error "Try: sudo setenforce 0  # Temporarily disable SELinux"
-        log_error "Or: sudo systemctl stop NetworkManager  # Stop NetworkManager temporarily"
-        return 1
+    # Create veth pair
+    if ! ip link add "$veth_host" type veth peer name "$veth_ns"; then
+        log_error "Failed to create veth pair"
+        log_error "Trying workaround..."
+        
+        # Try alternative approach
+        sleep 1
+        if ! ip link add name "$veth_host" type veth peer name "$veth_ns"; then
+            log_error "All veth creation methods failed"
+            return 1
+        fi
     fi
     
     # Move one end to subnet namespace
@@ -194,8 +221,8 @@ create_subnet() {
     ip link set "$veth_ns" netns "$ns_name"
     
     # Add host end to bridge
-    log_info "Connecting $veth_host to bridge $BRIDGE"
-    ip link set "$veth_host" master "$BRIDGE"
+    log_info "Connecting $veth_host to bridge $bridge_name"
+    ip link set "$veth_host" master "$bridge_name"
     ip link set "$veth_host" up
     
     # Configure namespace side
@@ -205,8 +232,20 @@ create_subnet() {
     ip netns exec "$ns_name" ip addr add "$subnet_cidr" dev "$veth_ns"
     
     # Set up routing
-    log_info "Setting default route via gateway: $GATEWAY"
-    ip netns exec "$ns_name" ip route add default via "$GATEWAY"
+    log_info "Setting default route via gateway: $gateway_ip"
+    ip netns exec "$ns_name" ip route add default via "$gateway_ip"
+    
+    # Store subnet configuration
+    local current_subs=$(get_vpc_config "$vpc_name" "SUBNETS")
+    if [ -z "$current_subs" ]; then
+        save_vpc_config "$vpc_name" "SUBNETS" "$subnet_name"
+    else
+        save_vpc_config "$vpc_name" "SUBNETS" "$current_subs,$subnet_name"
+    fi
+    
+    save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_NS" "$ns_name"
+    save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_CIDR" "$subnet_cidr"
+    save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_TYPE" "$subnet_type"
     
     log_info "✅ Subnet $subnet_name created successfully in VPC $vpc_name"
 }
@@ -221,12 +260,45 @@ list_vpcs() {
     
     for config_file in "$VPC_DIR"/*.conf; do
         local vpc_name=$(basename "$config_file" .conf)
+        local cidr=$(get_vpc_config "$vpc_name" "CIDR")
+        local bridge=$(get_vpc_config "$vpc_name" "BRIDGE")
+        local subnets=$(get_vpc_config "$vpc_name" "SUBNETS")
+        
         echo ""
         echo "VPC: $vpc_name"
-        source "$config_file"
-        echo "  CIDR: $CIDR"
-        echo "  Bridge: $BRIDGE"
+        echo "  CIDR: $cidr"
+        echo "  Bridge: $bridge"
+        echo "  Subnets: ${subnets:-None}"
+        
+        if [ -n "$subnets" ]; then
+            IFS=',' read -ra subnet_array <<< "$subnets"
+            for subnet in "${subnet_array[@]}"; do
+                local subnet_cidr=$(get_vpc_config "$vpc_name" "SUBNET_${subnet}_CIDR")
+                local subnet_type=$(get_vpc_config "$vpc_name" "SUBNET_${subnet}_TYPE")
+                echo "    - $subnet: $subnet_cidr ($subnet_type)"
+            done
+        fi
     done
+}
+
+# Test connectivity
+test_connectivity() {
+    local vpc_name="$1"
+    local subnet1="$2"
+    local subnet2="$3"
+    
+    log_info "Testing connectivity: $subnet1 -> $subnet2"
+    
+    local ns1=$(get_vpc_config "$vpc_name" "SUBNET_${subnet1}_NS")
+    local ip2=$(get_vpc_config "$vpc_name" "SUBNET_${subnet2}_CIDR" | cut -d'/' -f1)
+    
+    if ip netns exec "$ns1" ping -c 3 -W 1 "$ip2" 2>/dev/null; then
+        log_info "✅ Connectivity successful: $subnet1 can reach $subnet2"
+        return 0
+    else
+        log_info "❌ Connectivity failed: $subnet1 cannot reach $subnet2"
+        return 1
+    fi
 }
 
 # Main CLI handler
@@ -251,11 +323,35 @@ main() {
         list-vpcs)
             list_vpcs
             ;;
+        test)
+            if [ $# -lt 4 ]; then
+                log_error "Usage: test <vpc> <subnet1> <subnet2>"
+                exit 1
+            fi
+            test_connectivity "$2" "$3" "$4"
+            ;;
+        cleanup)
+            log_info "Cleaning up..."
+            rm -rf "$VPC_DIR"
+            for ns in $(ip netns list | grep -o 'ns-[^ ]*'); do
+                ip netns delete "$ns" 2>/dev/null || true
+            done
+            for bridge in $(ip link show type bridge 2>/dev/null | grep -o 'br-[^ ]*'); do
+                ip link set "$bridge" down 2>/dev/null
+                ip link delete "$bridge" 2>/dev/null || true
+            done
+            for veth in $(ip link show 2>/dev/null | grep -o 'veth-[^:]*'); do
+                ip link delete "$veth" 2>/dev/null || true
+            done
+            log_info "✅ Cleanup completed"
+            ;;
         *)
-            echo "Usage: $0 {create-vpc|create-subnet|list-vpcs}"
+            echo "Usage: $0 {create-vpc|create-subnet|list-vpcs|test|cleanup}"
             echo "  create-vpc <name> <cidr>"
             echo "  create-subnet <vpc> <name> <cidr> [type]"
             echo "  list-vpcs"
+            echo "  test <vpc> <subnet1> <subnet2>"
+            echo "  cleanup"
             ;;
     esac
 }
