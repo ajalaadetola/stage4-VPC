@@ -7,7 +7,7 @@ set -e
 
 # Configuration
 VPC_DIR="/tmp/vpc_configs"
-LOG_FILE="/tmp/vpc-demo.log"
+LOG_FILE="logs/vpc-demo.log"
 LOG_PREFIX="vpcctl"
 
 # Color codes for output
