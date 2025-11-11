@@ -167,7 +167,7 @@ save_vpc_config() {
     fi
     
     if grep -q "^$key=" "$config_file" 2>/dev/null; then
-        sed -i "s/^$key=.*/$key=$value/" "$config_file"
+        sed -i "s|^$key=.*|$key=$value|" "$config_file"
     else
         echo "$key=$value" >> "$config_file"
     fi
