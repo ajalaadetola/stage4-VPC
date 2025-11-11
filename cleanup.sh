@@ -1,55 +1,43 @@
 #!/bin/bash
-# cleanup.sh - Tear down all VPCs, subnets, namespaces, bridges, and NAT rules
 
 set -e
 
 echo "🧹 Starting cleanup of VPC environment..."
 
-# Function to delete all network namespaces created by vpcctl
-cleanup_namespaces() {
-    echo "🔹 Cleaning up network namespaces..."
-    for ns in $(ip netns list | awk '{print $1}'); do
-        if [[ $ns == ns-* ]]; then
-            echo "Deleting namespace: $ns"
-            ip netns delete "$ns"
-        fi
-    done
-}
+# 1️⃣ Clean up network namespaces
+echo "🔹 Cleaning up network namespaces..."
+for ns in $(ip netns list | awk '{print $1}'); do
+    echo "Deleting namespace: $ns"
+    ip netns delete "$ns"
+done
 
-# Function to delete all veth interfaces connected to bridges
-cleanup_veths() {
-    echo "🔹 Cleaning up veth interfaces..."
-    for veth in $(ip link show | awk -F: '/veth_/ {print $2}' | tr -d ' '); do
-        echo "Deleting veth: $veth"
-        ip link delete "$veth" 2>/dev/null || true
-    done
-}
+# 2️⃣ Clean up veth interfaces
+echo "🔹 Cleaning up veth interfaces..."
+for veth in $(ip link show | awk -F: '/veth_/ {print $2}' | tr -d ' '); do
+    echo "Deleting veth: $veth"
+    ip link delete "$veth" || true
+done
 
-# Function to delete all bridges created by vpcctl
-cleanup_bridges() {
-    echo "🔹 Cleaning up bridges..."
-    for br in $(ip link show | awk -F: '/br_/ {print $2}' | tr -d ' '); do
-        echo "Deleting bridge: $br"
-        ip link set "$br" down
-        ip link delete "$br" type bridge
-    done
-}
+# 3️⃣ Clean up bridges
+echo "🔹 Cleaning up bridges..."
+for br in $(brctl show | awk 'NR>1 {print $1}'); do
+    echo "Deleting bridge: $br"
+    ip link set "$br" down || true
+    brctl delbr "$br" || true
+done
 
-# Function to remove NAT rules set up by vpcctl
-cleanup_nat() {
-    echo "🔹 Cleaning up NAT rules..."
-    # Flush all POSTROUTING rules from nat table
-    iptables -t nat -F
-    # Reset forwarding rules
-    iptables -F
-    # Optionally, disable IP forwarding
-    sysctl -w net.ipv4.ip_forward=0
-}
+# 4️⃣ Clean up NAT rules
+echo "🔹 Cleaning up NAT rules..."
+sysctl -w net.ipv4.ip_forward=0
+iptables -t nat -F
+iptables -F
+iptables -X
 
-# Run cleanup functions
-cleanup_namespaces
-cleanup_veths
-cleanup_bridges
-cleanup_nat
+# 5️⃣ Remove VPC configurations
+VPC_DIR="/tmp/vpc_configs"
+if [ -d "$VPC_DIR" ]; then
+    echo "🔹 Removing VPC configuration directory: $VPC_DIR"
+    rm -rf "$VPC_DIR"
+fi
 
 echo "✅ Cleanup completed. All VPC resources removed."
