@@ -287,37 +287,38 @@ create_subnet() {
     
     create_namespace "$ns_name"
     
-    # Create veth pair with unique names including VPC name
-    local veth_host="veth_${vpc_name}_${subnet_name}_host"
-    local veth_ns="veth_${vpc_name}_${subnet_name}_ns"
-    
+        # Create shorter veth pair names (max 15 chars to avoid kernel limit)
+    local veth_host="veth_${subnet_name}_h"
+    local veth_ns="veth_${subnet_name}_n"
+
     # Clean up any existing veth interfaces
     cleanup_existing_veth "$veth_host"
-    
+
     log_info "Creating veth pair: $veth_host <-> $veth_ns"
-    
+
     # Create veth pair
     if ! run_cmd "ip link add $veth_host type veth peer name $veth_ns" "false"; then
         log_error "Failed to create veth pair"
         return 1
     fi
-    
+
     # Move one end to subnet namespace
     log_info "Moving $veth_ns to namespace $ns_name"
     run_cmd "ip link set $veth_ns netns $ns_name"
-    
+
     # Add host end to bridge
-    local bridge_name=$(get_vpc_config "$vpc_name" "BRIDGE")
+    local bridge_name
+    bridge_name=$(get_vpc_config "$vpc_name" "BRIDGE")
     log_info "Connecting $veth_host to bridge $bridge_name"
     run_cmd "ip link set $veth_host master $bridge_name"
     run_cmd "ip link set $veth_host up"
-    
+
     # Configure namespace side
     log_info "Configuring network in namespace $ns_name"
     run_cmd "ip netns exec $ns_name ip link set lo up"
     run_cmd "ip netns exec $ns_name ip link set $veth_ns up"
-    
-    # Assign IP address
+
+    # Assign IP address to veth in namespace
     log_info "Assigning IP address: $subnet_cidr to $veth_ns"
     run_cmd "ip netns exec $ns_name ip addr add $subnet_cidr dev $veth_ns"
     
