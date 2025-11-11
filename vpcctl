@@ -265,44 +265,38 @@ create_subnet() {
     local subnet_name="$2"
     local subnet_cidr="$3"
     local subnet_type="${4:-private}"
-    
+
     log_info "🔧 Creating subnet: $subnet_name (CIDR: $subnet_cidr, Type: $subnet_type)"
     VPC_NAME="$vpc_name"
-    
+
     if ! vpc_exists "$vpc_name"; then
         log_error "VPC $vpc_name not found"
         return 1
     fi
-    
+
     validate_cidr "$subnet_cidr" || return 1
-    
+
     # Create network namespace for subnet
     local ns_name="ns-${vpc_name}_${subnet_name}"
-    
+
     # Clean up existing namespace if it exists
     if namespace_exists "$ns_name"; then
         log_warn "Namespace $ns_name already exists, cleaning up..."
         delete_namespace "$ns_name"
     fi
-    
+
     create_namespace "$ns_name"
-    
-    # Create shorter veth pair names (max 15 chars to avoid kernel limit)
+
+    # Short veth names
     local veth_host="veth_${subnet_name}_h"
     local veth_ns="veth_${subnet_name}_n"
 
-    # Clean up any existing veth interfaces
     cleanup_existing_veth "$veth_host"
 
     log_info "Creating veth pair: $veth_host <-> $veth_ns"
+    run_cmd "ip link add $veth_host type veth peer name $veth_ns" "false"
 
-    # Create veth pair
-    if ! run_cmd "ip link add $veth_host type veth peer name $veth_ns" "false"; then
-        log_error "Failed to create veth pair"
-        return 1
-    fi
-
-    # Move one end to subnet namespace
+    # Move one end to namespace
     log_info "Moving $veth_ns to namespace $ns_name"
     run_cmd "ip link set $veth_ns netns $ns_name"
 
@@ -318,31 +312,38 @@ create_subnet() {
     run_cmd "ip netns exec $ns_name ip link set lo up"
     run_cmd "ip netns exec $ns_name ip link set $veth_ns up"
 
-    # Calculate usable host IP inside the subnet (avoid .0 or .255)
+    # Calculate base IP for subnet
     subnet_base=$(echo "$subnet_cidr" | cut -d'/' -f1 | awk -F. '{print $1"."$2"."$3}')
-    host_ip="${subnet_base}.2/24"   # Assign .2 to namespace
-    log_info "Assigning IP address: $host_ip to $veth_ns"
-    run_cmd "ip netns exec $ns_name ip addr add $host_ip dev $veth_ns"
 
-    # Set default route via the bridge gateway
-    local gateway_ip=$(get_vpc_config "$vpc_name" "GATEWAY")
-    log_info "Setting default route via gateway: $gateway_ip"
+    # Assign IP to host side (gateway)
+    host_ip="${subnet_base}.1/24"
+    log_info "Assigning host IP (gateway) $host_ip to $veth_host"
+    run_cmd "ip addr add $host_ip dev $veth_host"
+
+    # Assign IP to namespace side
+    ns_ip="${subnet_base}.2/24"
+    log_info "Assigning namespace IP $ns_ip to $veth_ns"
+    run_cmd "ip netns exec $ns_name ip addr add $ns_ip dev $veth_ns"
+
+    # Set default route in namespace via host IP
+    gateway_ip="${subnet_base}.1"
+    log_info "Setting default route in namespace via gateway $gateway_ip"
     run_cmd "ip netns exec $ns_name ip route add default via $gateway_ip"
-    
-    # Store subnet configuration
-    local current_subs=$(get_vpc_config "$vpc_name" "SUBNETS")
+
+    # Store subnet configuration (unchanged)
+    local current_subs
+    current_subs=$(get_vpc_config "$vpc_name" "SUBNETS")
     if [ -z "$current_subs" ]; then
         save_vpc_config "$vpc_name" "SUBNETS" "$subnet_name"
     else
         save_vpc_config "$vpc_name" "SUBNETS" "$current_subs,$subnet_name"
     fi
-    
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_NS" "$ns_name"
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_CIDR" "$subnet_cidr"
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_TYPE" "$subnet_type"
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_VETH_HOST" "$veth_host"
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_VETH_NS" "$veth_ns"
-    
+
     log_info "✅ Subnet $subnet_name created successfully in VPC $vpc_name"
 }
 
