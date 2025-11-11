@@ -287,7 +287,7 @@ create_subnet() {
     
     create_namespace "$ns_name"
     
-        # Create shorter veth pair names (max 15 chars to avoid kernel limit)
+    # Create shorter veth pair names (max 15 chars to avoid kernel limit)
     local veth_host="veth_${subnet_name}_h"
     local veth_ns="veth_${subnet_name}_n"
 
@@ -323,8 +323,8 @@ create_subnet() {
     host_ip="${subnet_base}.2/24"   # Assign .2 to namespace
     log_info "Assigning IP address: $host_ip to $veth_ns"
     run_cmd "ip netns exec $ns_name ip addr add $host_ip dev $veth_ns"
-    
-    # Set up routing
+
+    # Set default route via the bridge gateway
     local gateway_ip=$(get_vpc_config "$vpc_name" "GATEWAY")
     log_info "Setting default route via gateway: $gateway_ip"
     run_cmd "ip netns exec $ns_name ip route add default via $gateway_ip"
