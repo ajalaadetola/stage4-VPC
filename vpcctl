@@ -539,7 +539,7 @@ apply_custom_firewall_rules() {
     done < "$rules_file"
 }
 
-# VPC Peering functionality
+# VPC Peering functionality - Ultra-short names
 setup_peering() {
     local vpc1_name="$1"
     local vpc2_name="$2"
@@ -556,9 +556,18 @@ setup_peering() {
         return 1
     fi
     
-    # Create veth pair for peering
-    local peer1="peer_${vpc1_name}_${vpc2_name}"
-    local peer2="peer_${vpc2_name}_${vpc1_name}"
+    # Create ultra-short interface names using first 3 chars of each VPC
+    local vpc1_short=$(echo "$vpc1_name" | cut -c1-3)
+    local vpc2_short=$(echo "$vpc2_name" | cut -c1-3)
+    
+    local peer1="p${vpc1_short}${vpc2_short}"
+    local peer2="p${vpc2_short}${vpc1_short}"
+    
+    # Ensure names are exactly 7 characters
+    peer1=$(echo "$peer1" | cut -c1-7)
+    peer2=$(echo "$peer2" | cut -c1-7)
+    
+    log_info "Using interface names: $peer1 <-> $peer2"
     
     # Clean up existing interfaces
     cleanup_existing_veth "$peer1"
