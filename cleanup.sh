@@ -1,87 +1,55 @@
 #!/bin/bash
-
-# cleanup.sh - Complete VPC resource cleanup
+# cleanup.sh - Tear down all VPCs, subnets, namespaces, bridges, and NAT rules
 
 set -e
 
-# Color codes
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+echo "🧹 Starting cleanup of VPC environment..."
 
-log() {
-    echo -e "${GREEN}[CLEANUP]${NC} $*"
+# Function to delete all network namespaces created by vpcctl
+cleanup_namespaces() {
+    echo "🔹 Cleaning up network namespaces..."
+    for ns in $(ip netns list | awk '{print $1}'); do
+        if [[ $ns == ns-* ]]; then
+            echo "Deleting namespace: $ns"
+            ip netns delete "$ns"
+        fi
+    done
 }
 
-warn() {
-    echo -e "${YELLOW}[CLEANUP]${NC} $*"
+# Function to delete all veth interfaces connected to bridges
+cleanup_veths() {
+    echo "🔹 Cleaning up veth interfaces..."
+    for veth in $(ip link show | awk -F: '/veth_/ {print $2}' | tr -d ' '); do
+        echo "Deleting veth: $veth"
+        ip link delete "$veth" 2>/dev/null || true
+    done
 }
 
-error() {
-    echo -e "${RED}[CLEANUP]${NC} $*"
+# Function to delete all bridges created by vpcctl
+cleanup_bridges() {
+    echo "🔹 Cleaning up bridges..."
+    for br in $(ip link show | awk -F: '/br_/ {print $2}' | tr -d ' '); do
+        echo "Deleting bridge: $br"
+        ip link set "$br" down
+        ip link delete "$br" type bridge
+    done
 }
 
-# Check root
-if [ "$EUID" -ne 0 ]; then
-    error "This script must be run as root"
-    exit 1
-fi
+# Function to remove NAT rules set up by vpcctl
+cleanup_nat() {
+    echo "🔹 Cleaning up NAT rules..."
+    # Flush all POSTROUTING rules from nat table
+    iptables -t nat -F
+    # Reset forwarding rules
+    iptables -F
+    # Optionally, disable IP forwarding
+    sysctl -w net.ipv4.ip_forward=0
+}
 
-log "🧹 Starting complete VPC cleanup..."
+# Run cleanup functions
+cleanup_namespaces
+cleanup_veths
+cleanup_bridges
+cleanup_nat
 
-# Remove all network namespaces
-log "Removing network namespaces..."
-for ns in $(ip netns list | grep -E 'ns-[^ ]*'); do
-    log "Deleting namespace: $ns"
-    ip netns delete "$ns" 2>/dev/null || warn "Failed to delete namespace $ns"
-done
-
-# Remove all bridges
-log "Removing bridges..."
-for bridge in $(ip link show type bridge 2>/dev/null | grep -o 'br-[^:]*'); do
-    log "Deleting bridge: $bridge"
-    ip link set "$bridge" down 2>/dev/null || warn "Could not bring down bridge $bridge"
-    ip link delete "$bridge" type bridge 2>/dev/null || warn "Could not delete bridge $bridge"
-done
-
-# Remove veth interfaces
-log "Removing veth interfaces..."
-for veth in $(ip link show 2>/dev/null | grep -o 'veth-[^:]*'); do
-    log "Deleting veth: $veth"
-    ip link delete "$veth" 2>/dev/null || warn "Could not delete veth $veth"
-done
-
-# Remove peer interfaces
-log "Removing peer interfaces..."
-for peer in $(ip link show 2>/dev/null | grep -o 'peer-[^:]*'); do
-    log "Deleting peer: $peer"
-    ip link delete "$peer" 2>/dev/null || warn "Could not delete peer $peer"
-done
-
-# Cleanup iptables rules
-log "Cleaning up iptables rules..."
-
-# Remove NAT rules
-iptables -t nat -L POSTROUTING --line-numbers 2>/dev/null | grep MASQUERADE | while read line; do
-    num=$(echo "$line" | awk '{print $1}')
-    iptables -t nat -D POSTROUTING "$num" 2>/dev/null || true
-done
-
-# Remove forward rules
-iptables -L FORWARD --line-numbers 2>/dev/null | while read line; do
-    if echo "$line" | grep -q "br-" || echo "$line" | grep -q "state RELATED"; then
-        num=$(echo "$line" | awk '{print $1}')
-        iptables -D FORWARD "$num" 2>/dev/null || true
-    fi
-done
-
-# Remove configuration directory
-log "Removing configuration files..."
-rm -rf "/tmp/vpc_configs"
-
-# Kill any remaining processes in namespaces
-log "Cleaning up processes..."
-pkill -f "ip netns exec" 2>/dev/null || true
-
-log "✅ Cleanup completed successfully!"
+echo "✅ Cleanup completed. All VPC resources removed."
