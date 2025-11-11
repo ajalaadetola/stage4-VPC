@@ -265,72 +265,70 @@ create_subnet() {
     local subnet_name="$2"
     local subnet_cidr="$3"
     local subnet_type="${4:-private}"
-
+    
     log_info "🔧 Creating subnet: $subnet_name (CIDR: $subnet_cidr, Type: $subnet_type)"
-    VPC_NAME="$vpc_name"
-
+    
     if ! vpc_exists "$vpc_name"; then
         log_error "VPC $vpc_name not found"
         return 1
     fi
-
+    
     validate_cidr "$subnet_cidr" || return 1
-
-    # Create network namespace for subnet
+    
+    # Create network namespace
     local ns_name="ns-${vpc_name}_${subnet_name}"
-
-    # Clean up existing namespace if it exists
     if namespace_exists "$ns_name"; then
         log_warn "Namespace $ns_name already exists, cleaning up..."
         delete_namespace "$ns_name"
     fi
-
     create_namespace "$ns_name"
-
-    # Short veth names
+    
+    # Create veth pair
     local veth_host="veth_${subnet_name}_h"
     local veth_ns="veth_${subnet_name}_n"
-
     cleanup_existing_veth "$veth_host"
-
+    
     log_info "Creating veth pair: $veth_host <-> $veth_ns"
     run_cmd "ip link add $veth_host type veth peer name $veth_ns" "false"
-
-    # Move one end to namespace
+    
+    # Move namespace end
     log_info "Moving $veth_ns to namespace $ns_name"
     run_cmd "ip link set $veth_ns netns $ns_name"
-
-    # Add host end to bridge
+    
+    # Attach host end to bridge
     local bridge_name
     bridge_name=$(get_vpc_config "$vpc_name" "BRIDGE")
     log_info "Connecting $veth_host to bridge $bridge_name"
     run_cmd "ip link set $veth_host master $bridge_name"
     run_cmd "ip link set $veth_host up"
-
+    
     # Configure namespace side
     log_info "Configuring network in namespace $ns_name"
     run_cmd "ip netns exec $ns_name ip link set lo up"
     run_cmd "ip netns exec $ns_name ip link set $veth_ns up"
-
-    # Calculate base IP for subnet
+    
+    # Calculate usable IPs
+    local subnet_base
     subnet_base=$(echo "$subnet_cidr" | cut -d'/' -f1 | awk -F. '{print $1"."$2"."$3}')
-
-    # Assign IP to host side (gateway)
-    host_ip="${subnet_base}.1/24"
-    log_info "Assigning host IP (gateway) $host_ip to $veth_host"
-    run_cmd "ip addr add $host_ip dev $veth_host"
-
-    # Assign IP to namespace side
-    ns_ip="${subnet_base}.2/24"
-    log_info "Assigning namespace IP $ns_ip to $veth_ns"
+    local ns_ip="${subnet_base}.2/24"     # Namespace IP
+    local gateway_ip="${subnet_base}.1"   # Gateway IP on bridge
+    
+    # Assign IP to namespace
+    log_info "Assigning IP $ns_ip to $veth_ns"
     run_cmd "ip netns exec $ns_name ip addr add $ns_ip dev $veth_ns"
-
-    # Set default route in namespace via host IP
-    gateway_ip="${subnet_base}.1"
-    log_info "Setting default route in namespace via gateway $gateway_ip"
+    
+    # Assign gateway IP to bridge if not already set
+    if ! ip addr show "$bridge_name" | grep -q "$gateway_ip"; then
+        log_info "Assigning gateway IP $gateway_ip to bridge $bridge_name"
+        run_cmd "ip addr add $gateway_ip/24 dev $bridge_name"
+        run_cmd "ip link set $bridge_name up"
+    fi
+    
+    # Set default route in namespace via gateway
+    log_info "Setting default route via gateway $gateway_ip"
     run_cmd "ip netns exec $ns_name ip route add default via $gateway_ip"
-
-    # Store subnet configuration (unchanged)
+    
+    # Store subnet configuration
     local current_subs
     current_subs=$(get_vpc_config "$vpc_name" "SUBNETS")
     if [ -z "$current_subs" ]; then
@@ -338,12 +336,13 @@ create_subnet() {
     else
         save_vpc_config "$vpc_name" "SUBNETS" "$current_subs,$subnet_name"
     fi
+    
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_NS" "$ns_name"
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_CIDR" "$subnet_cidr"
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_TYPE" "$subnet_type"
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_VETH_HOST" "$veth_host"
     save_vpc_config "$vpc_name" "SUBNET_${subnet_name}_VETH_NS" "$veth_ns"
-
+    
     log_info "✅ Subnet $subnet_name created successfully in VPC $vpc_name"
 }
 
